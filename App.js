@@ -7,6 +7,7 @@ import DashboardScreen from './src/screens/DashboardScreen';
 import LiveProtectionScreen from './src/screens/LiveProtectionScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import InterpreterScreen from './src/screens/InterpreterScreen';
 import TrainNavigator from './src/screens/train/TrainNavigator';
 import { ProtectionProvider } from './src/context/ProtectionContext';
 import { NavigationContainer } from '@react-navigation/native';
@@ -64,6 +65,13 @@ function MainTabs() {
         component={HistoryScreen} 
         options={{
           tabBarIcon: ({ color, size }) => <Clock color={color} size={size} />
+        }}
+      />
+      <Tab.Screen
+        name="Interpreter"
+        component={InterpreterScreen}
+        options={{
+          tabBarIcon: ({ color, size }) => <Mic color={color} size={size} />
         }}
       />
       <Tab.Screen 

@@ -10,23 +10,39 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.util.Log
+import android.util.TypedValue
 import android.view.Gravity
-import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 
 class ProtectionService : Service(), CallSessionManager.CallStateListener, AudioCaptureManager.AudioCaptureListener, InferenceEngine.InferenceListener {
 
     private lateinit var windowManager: WindowManager
-    private var overlayView: View? = null
-    private var textView: TextView? = null
+    private var containerView: FrameLayout? = null
+    private var collapsedView: View? = null
+    private var expandedView: View? = null
+    
+    // Expanded View components
+    private var statusText: TextView? = null
+    private var resultText: TextView? = null
+    private var progressBar: ProgressBar? = null
+    private var shieldIcon: ImageView? = null
+    private var closeButton: ImageView? = null
     
     private val CHANNEL_ID = "VoxSentryProtectionChannel"
 
@@ -38,6 +54,7 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
 
     private var isCallCurrentlyActive = false
     private var isSpeakerOn = false
+    private var isExpanded = false
 
     private lateinit var historyStore: HistoryStore
     private var callStartTime: Long = 0
@@ -81,7 +98,11 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         val filter = IntentFilter()
         filter.addAction(AudioManager.ACTION_HEADSET_PLUG)
         filter.addAction(AudioManager.ACTION_SPEAKERPHONE_STATE_CHANGED)
-        registerReceiver(audioRouteReceiver, filter)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(audioRouteReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(audioRouteReceiver, filter)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -92,7 +113,11 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
-        startForeground(1, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(1, notification)
+        }
         return START_STICKY
     }
 
@@ -150,9 +175,7 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
     }
 
     override fun onCaptureError(error: String) {
-        // Drop to a failure state if capture interrupted
         updateOverlayState(OverlayState.WAITING)
-        textView?.text = "Capture interrupted"
         broadcastEvent("onCaptureStopped", error)
     }
 
@@ -168,103 +191,242 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         broadcastEvent("onDetectionUpdate", result)
     }
 
+    private fun dpToPx(dp: Int): Int {
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, dp.toFloat(), resources.displayMetrics).toInt()
+    }
+
+    private fun createCircularBackground(color: Int): GradientDrawable {
+        val shape = GradientDrawable()
+        shape.shape = GradientDrawable.OVAL
+        shape.setColor(color)
+        return shape
+    }
+
+    private fun createRectangularBackground(color: Int, radiusDp: Int): GradientDrawable {
+        val shape = GradientDrawable()
+        shape.shape = GradientDrawable.RECTANGLE
+        shape.setColor(color)
+        shape.cornerRadius = dpToPx(radiusDp).toFloat()
+        return shape
+    }
+
     private fun updateOverlayState(state: OverlayState) {
-        if (overlayView == null) return
+        if (containerView == null) return
 
-        val bgDrawable = overlayView?.background as? android.graphics.drawable.GradientDrawable ?: return
+        currentState = state
 
-        when (state) {
-            OverlayState.WAITING -> {
-                bgDrawable.setStroke(2, Color.parseColor("#9CA3AF")) // Gray
-                textView?.text = "Tap to enable speaker for protection"
-                textView?.setTextColor(Color.parseColor("#9CA3AF"))
-                
-                overlayView?.setOnClickListener {
-                    audioManager.isSpeakerphoneOn = true
-                    checkSpeakerState()
+        // Main thread UI update
+        containerView?.post {
+            when (state) {
+                OverlayState.WAITING -> {
+                    statusText?.text = "Waiting for speaker..."
+                    resultText?.text = "Enable speaker to analyze"
+                    resultText?.setTextColor(Color.WHITE)
+                    progressBar?.visibility = View.GONE
+                    shieldIcon?.setColorFilter(Color.GRAY)
                 }
-            }
-            OverlayState.ANALYZING -> {
-                bgDrawable.setStroke(2, Color.parseColor("#2DD4E8")) // Teal
-                textView?.text = "Analyzing Audio..."
-                textView?.setTextColor(Color.parseColor("#2DD4E8"))
-                overlayView?.setOnClickListener(null)
-            }
-            OverlayState.SAFE -> {
-                bgDrawable.setStroke(2, Color.parseColor("#10B981")) // Green
-                textView?.text = "Safe: Human Voice"
-                textView?.setTextColor(Color.parseColor("#10B981"))
-                overlayView?.setOnClickListener(null)
-            }
-            OverlayState.THREAT -> {
-                if (currentState != OverlayState.THREAT) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION.O) {
+                OverlayState.ANALYZING -> {
+                    statusText?.text = "Analyzing voice"
+                    resultText?.text = "Listening for patterns..."
+                    resultText?.setTextColor(Color.parseColor("#2DD4E8"))
+                    progressBar?.visibility = View.VISIBLE
+                    shieldIcon?.setColorFilter(Color.parseColor("#2DD4E8"))
+                }
+                OverlayState.SAFE -> {
+                    statusText?.text = "Analysis Complete"
+                    resultText?.text = "Safe: Human Voice"
+                    resultText?.setTextColor(Color.parseColor("#10B981"))
+                    progressBar?.visibility = View.GONE
+                    shieldIcon?.setColorFilter(Color.parseColor("#10B981"))
+                }
+                OverlayState.THREAT -> {
+                    val percentage = (maxConfidence * 100).toInt()
+                    statusText?.text = "THREAT DETECTED"
+                    resultText?.text = "$percentage% Cloned Voice"
+                    resultText?.setTextColor(Color.parseColor("#EF4444"))
+                    progressBar?.visibility = View.GONE
+                    shieldIcon?.setColorFilter(Color.parseColor("#EF4444"))
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         vibrator.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE))
                     } else {
                         vibrator.vibrate(500)
                     }
                 }
-                bgDrawable.setStroke(2, Color.parseColor("#EF4444")) // Red
-                textView?.text = "THREAT DETECTED"
-                textView?.setTextColor(Color.parseColor("#EF4444"))
-                overlayView?.setOnClickListener(null)
             }
         }
-        currentState = state
     }
 
     private fun showOverlay() {
-        if (overlayView != null) return
+        if (containerView != null) return
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            if (Build.VERSION.SDK_INT >= Build.VERSION.O)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else
+                @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         )
 
-        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        params.y = 100
+        params.gravity = Gravity.TOP or Gravity.END
+        params.x = dpToPx(20)
+        params.y = dpToPx(150)
 
-        val view = android.widget.LinearLayout(this)
-        view.orientation = android.widget.LinearLayout.HORIZONTAL
-        view.setBackgroundColor(Color.parseColor("#151B2B"))
-        view.setPadding(40, 30, 40, 30)
+        containerView = FrameLayout(this)
         
-        textView = TextView(this)
-        textView?.textSize = 14f
-        textView?.gravity = Gravity.CENTER
+        // 1. Create Collapsed View (The Circle)
+        val collapsed = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(dpToPx(70), dpToPx(70))
+            background = createCircularBackground(Color.parseColor("#151B2B"))
+            elevation = dpToPx(8).toFloat()
+            setPadding(dpToPx(10), dpToPx(10), dpToPx(10), dpToPx(10))
+            
+            val icon = ImageView(context).apply {
+                setImageResource(R.mipmap.ic_launcher)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(30), dpToPx(30))
+            }
+            addView(icon)
+            
+            val label = TextView(context).apply {
+                text = "VoxSentry"
+                setTextColor(Color.WHITE)
+                textSize = 8f
+                gravity = Gravity.CENTER
+            }
+            addView(label)
+        }
         
-        view.addView(textView)
-        
-        val cornerRadius = android.graphics.drawable.GradientDrawable()
-        cornerRadius.setColor(Color.parseColor("#151B2B"))
-        cornerRadius.cornerRadius = 30f
-        view.background = cornerRadius
+        // 2. Create Expanded View (The Rectangle)
+        val expanded = LinearLayout(this).apply {
+            visibility = View.GONE
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(dpToPx(220), dpToPx(180))
+            background = createRectangularBackground(Color.parseColor("#151B2B"), 20)
+            elevation = dpToPx(10).toFloat()
+            setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16))
+            
+            // Header Row
+            val header = FrameLayout(context).apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                
+                val title = TextView(context).apply {
+                    statusText = this
+                    text = "Analyzing voice"
+                    setTextColor(Color.WHITE)
+                    textSize = 16f
+                    gravity = Gravity.CENTER
+                }
+                addView(title)
+                
+                val close = ImageView(context).apply {
+                    closeButton = this
+                    setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
+                    layoutParams = FrameLayout.LayoutParams(dpToPx(20), dpToPx(20)).apply {
+                        gravity = Gravity.END or Gravity.TOP
+                    }
+                    setColorFilter(Color.GRAY)
+                }
+                addView(close)
+            }
+            addView(header)
+            
+            // Icon / Result Area
+            val centerIcon = ImageView(context).apply {
+                shieldIcon = this
+                setImageResource(R.mipmap.ic_launcher)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(50), dpToPx(50)).apply {
+                    topMargin = dpToPx(10)
+                }
+            }
+            addView(centerIcon)
+            
+            val result = TextView(context).apply {
+                resultText = this
+                text = "Listening..."
+                setTextColor(Color.parseColor("#2DD4E8"))
+                textSize = 18f
+                setTypeface(null, Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setPadding(0, dpToPx(8), 0, dpToPx(8))
+            }
+            addView(result)
+            
+            val progress = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+                progressBar = this
+                isIndeterminate = true
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(4))
+            }
+            addView(progress)
+            
+            val footer = TextView(context).apply {
+                text = "AI-generated voice detection"
+                setTextColor(Color.GRAY)
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setPadding(0, dpToPx(4), 0, 0)
+            }
+            addView(footer)
+        }
 
-        overlayView = view
+        containerView?.addView(collapsed)
+        containerView?.addView(expanded)
+        collapsedView = collapsed
+        expandedView = expanded
+
+        // Click listeners
+        collapsed.setOnClickListener {
+            toggleExpanded(true, params)
+        }
+        
+        closeButton?.setOnClickListener {
+            toggleExpanded(false, params)
+        }
+
         try {
-            android.util.Log.d("VoxSentry", "Attempting to add overlay view to WindowManager...")
-            windowManager.addView(overlayView, params)
-            android.util.Log.d("VoxSentry", "Successfully added overlay view.")
+            windowManager.addView(containerView, params)
         } catch (e: Exception) {
-            android.util.Log.e("VoxSentry", "Failed to add overlay view", e)
-            e.printStackTrace()
+            Log.e("VoxSentry", "Failed to add overlay", e)
         }
 
         updateOverlayState(OverlayState.WAITING)
     }
 
+    private fun toggleExpanded(expand: Boolean, params: WindowManager.LayoutParams) {
+        isExpanded = expand
+        if (expand) {
+            collapsedView?.visibility = View.GONE
+            expandedView?.visibility = View.VISIBLE
+            params.width = dpToPx(220)
+            params.height = dpToPx(180)
+        } else {
+            collapsedView?.visibility = View.VISIBLE
+            expandedView?.visibility = View.GONE
+            params.width = dpToPx(70)
+            params.height = dpToPx(70)
+        }
+        try {
+            windowManager.updateViewLayout(containerView, params)
+        } catch (e: Exception) {}
+    }
+
     private fun hideOverlay() {
-        if (overlayView != null) {
+        if (containerView != null) {
             try {
-                windowManager.removeView(overlayView)
-                overlayView = null
-                textView = null
+                windowManager.removeView(containerView)
+                containerView = null
+                collapsedView = null
+                expandedView = null
+                statusText = null
+                resultText = null
+                progressBar = null
+                shieldIcon = null
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -281,7 +443,7 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 "VoxSentry Protection Service",
@@ -298,6 +460,8 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         audioCaptureManager.stopCapture()
         CallSessionManager.stopNativeMonitoring()
         CallSessionManager.setListener(null)
-        unregisterReceiver(audioRouteReceiver)
+        try {
+            unregisterReceiver(audioRouteReceiver)
+        } catch (e: Exception) {}
     }
 }

@@ -20,5 +20,23 @@ allprojects {
   }
 }
 
+ext {
+  ndkVersion = "26.3.11579264"
+  compileSdkVersion = 36
+  targetSdkVersion = 34
+  minSdkVersion = 24
+  buildToolsVersion = "35.0.0"
+}
+
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"
+
+subprojects {
+    project.configurations.all {
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == 'org.tensorflow' && details.requested.name == 'tensorflow-lite') {
+                details.useVersion '2.16.1'
+            }
+        }
+    }
+}

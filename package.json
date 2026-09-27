@@ -12,6 +12,8 @@
     "expo": "~54.0.37",
     "expo-av": "~16.0.0",
     "expo-dev-client": "~6.0.21",
+    "expo-localization": "^57.0.1",
+    "expo-speech": "^57.0.2",
     "expo-status-bar": "~3.0.0",
     "lucide-react-native": "^1.34.0",
     "moti": "^0.30.0",

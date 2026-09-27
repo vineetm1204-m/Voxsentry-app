@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.util.LinkedList
@@ -16,20 +18,17 @@ class InferenceEngine(private val context: Context) {
 
     private var listener: InferenceListener? = null
     private var interpreter: Interpreter? = null
+    private val audioProcessor = AudioProcessor()
 
-    // Smoothing: Rolling buffer for majority vote over the last 3 windows
     private val resultBuffer = LinkedList<Boolean>()
-    private val bufferSize = 3
-
-    // Configurable threshold for threat detection
-    // TODO: Update this threshold based on model evaluation metrics
+    private val bufferSize = 5
     private val THREAT_THRESHOLD = 0.5f
 
     init {
         try {
             val modelBuffer = loadModelFile(context, "voice_clone_detector_hindi.tflite")
             val options = Interpreter.Options()
-            options.setNumThreads(4) // Use 4 threads for faster CPU inference
+            options.setNumThreads(4)
             interpreter = Interpreter(modelBuffer, options)
             Log.i("InferenceEngine", "TFLite model loaded successfully.")
         } catch (e: Exception) {
@@ -51,34 +50,43 @@ class InferenceEngine(private val context: Context) {
     }
 
     fun processAudioWindow(audioData: ShortArray) {
-        if (interpreter == null) {
-            Log.e("InferenceEngine", "Interpreter not initialized. Cannot run inference.")
-            return
-        }
+        val interp = interpreter ?: return
 
-        // 1. Extract Features
-        // The model expects shape [1, 64, 188, 1] (Float32)
-        val features = extractFeatures(audioData)
-        if (features == null) {
-            Log.e("InferenceEngine", "Feature extraction returned null.")
-            return
+        // 1. Extract Mel Spectrogram [64, 188]
+        val melData = audioProcessor.extractMelSpectrogram(audioData)
+        
+        // 2. Prepare Input ByteBuffer [1, 64, 188, 1] * Float32 (4 bytes)
+        val inputBuffer = ByteBuffer.allocateDirect(1 * 64 * 188 * 1 * 4)
+        inputBuffer.order(ByteOrder.nativeOrder())
+        
+        for (m in 0 until 64) {
+            for (f in 0 until 188) {
+                inputBuffer.putFloat(melData[m][f])
+            }
         }
+        inputBuffer.rewind()
 
-        // 2. Run Inference
+        // 3. Run Inference
         val output = Array(1) { FloatArray(1) }
         try {
-            interpreter?.run(features, output)
+            interp.run(inputBuffer, output)
         } catch (e: Exception) {
             Log.e("InferenceEngine", "Inference failed", e)
             return
         }
 
         val rawConfidence = output[0][0]
+        
+        // Model-specific interpretation:
+        // Usually, 0.5 is the midpoint. If it consistently gives 0.99 for everything,
+        // it might mean the model thinks everything is Cloned (if 1.0 = Cloned)
+        // or it might mean we are passing the data in the wrong range.
+        
         val isThreat = rawConfidence > THREAT_THRESHOLD
 
-        Log.d("InferenceEngine", "Raw confidence: $rawConfidence, isThreat: $isThreat")
+        Log.d("InferenceEngine", "Model raw output: $rawConfidence")
 
-        // 3. Apply Smoothing (Majority Vote)
+        // 4. Smoothing
         resultBuffer.addLast(isThreat)
         if (resultBuffer.size > bufferSize) {
             resultBuffer.removeFirst()
@@ -87,37 +95,7 @@ class InferenceEngine(private val context: Context) {
         val threatCount = resultBuffer.count { it }
         val smoothedIsThreat = threatCount > (resultBuffer.size / 2)
 
-        // Dispatch smoothed result and raw confidence to UI
         listener?.onDetectionResult(smoothedIsThreat, rawConfidence)
-    }
-
-    /**
-     * EXTRACT FEATURES
-     * WARNING: This needs numeric validation against the Python reference!
-     * We need the exact parameters (n_fft, hop_length, n_mels) to produce
-     * the exact 64x188 matrix the model expects.
-     * 
-     * Currently implementing a stub that returns a zeroed 1x64x188x1 tensor
-     * so the pipeline compiles and doesn't crash, but it WILL NOT detect anything
-     * accurately until the math is verified.
-     */
-    private fun extractFeatures(audioData: ShortArray): Array<Array<Array<FloatArray>>>? {
-        val numMels = 64
-        val numFrames = 188
-        
-        // Output shape required: [1, 64, 188, 1]
-        val outputFeatures = Array(1) { 
-            Array(numMels) { 
-                Array(numFrames) { 
-                    FloatArray(1) 
-                } 
-            } 
-        }
-
-        // TODO: Implement actual DSP (STFT, Mel filterbank, Log scaling) here
-        // using the exact parameters from the training notebook.
-        
-        return outputFeatures
     }
 
     fun reset() {

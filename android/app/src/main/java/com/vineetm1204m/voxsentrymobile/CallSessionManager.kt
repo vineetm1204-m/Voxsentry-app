@@ -33,7 +33,7 @@ object CallSessionManager {
     fun startNativeMonitoring(context: Context) {
         telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         
-        if (Build.VERSION.SDK_INT >= Build.VERSION.S) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             registerTelephonyCallback(context)
         } else {
             registerPhoneStateListener()
@@ -41,7 +41,7 @@ object CallSessionManager {
     }
 
     fun stopNativeMonitoring() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION.S) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             telephonyCallback?.let {
                 telephonyManager?.unregisterTelephonyCallback(it)
             }
@@ -66,7 +66,7 @@ object CallSessionManager {
         }
     }
 
-    @RequiresApi(Build.VERSION.SDK_INT >= Build.VERSION.S)
+    @RequiresApi(Build.VERSION_CODES.S)
     private fun registerTelephonyCallback(context: Context) {
         telephonyCallback = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
             override fun onCallStateChanged(state: Int) {

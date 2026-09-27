@@ -49,7 +49,7 @@ class CallDetectionModule(private val reactContext: ReactApplicationContext) : R
     @ReactMethod
     fun startProtection(promise: Promise) {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION.M) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 if (!Settings.canDrawOverlays(reactContext)) {
                     promise.reject("PERMISSION_DENIED", "SYSTEM_ALERT_WINDOW permission not granted")
                     return
@@ -57,7 +57,7 @@ class CallDetectionModule(private val reactContext: ReactApplicationContext) : R
             }
             
             val intent = Intent(reactContext, ProtectionService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION.O) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 reactContext.startForegroundService(intent)
             } else {
                 reactContext.startService(intent)
@@ -81,7 +81,7 @@ class CallDetectionModule(private val reactContext: ReactApplicationContext) : R
 
     @ReactMethod
     fun checkOverlayPermission(promise: Promise) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             promise.resolve(Settings.canDrawOverlays(reactContext))
         } else {
             promise.resolve(true)
@@ -90,7 +90,7 @@ class CallDetectionModule(private val reactContext: ReactApplicationContext) : R
 
     @ReactMethod
     fun requestOverlayPermission(promise: Promise) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (!Settings.canDrawOverlays(reactContext)) {
                 val intent = Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -123,7 +123,7 @@ class CallDetectionModule(private val reactContext: ReactApplicationContext) : R
 
     @ReactMethod
     fun checkBatteryOptimizationExemption(promise: Promise) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val powerManager = reactContext.getSystemService(Context.POWER_SERVICE) as PowerManager
             promise.resolve(powerManager.isIgnoringBatteryOptimizations(reactContext.packageName))
         } else {
@@ -133,7 +133,7 @@ class CallDetectionModule(private val reactContext: ReactApplicationContext) : R
 
     @ReactMethod
     fun requestBatteryOptimizationExemption(promise: Promise) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
             intent.data = Uri.parse("package:" + reactContext.packageName)
             intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
