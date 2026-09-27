@@ -9,9 +9,10 @@ data class CallRecord(
     val id: String,
     val timestamp: Long,
     val duration: Long,
-    val finalStatus: String, // "safe", "threat", or "unknown"
+    val finalStatus: String, // "real", "suspicious", "cloned", "uncertain", "unavailable"
     val maxConfidence: Float,
-    val callType: String // "native", "whatsapp", etc.
+    val callType: String, // "native", "whatsapp", etc.
+    val reason: String? = null
 )
 
 class HistoryStore(context: Context) {
@@ -28,6 +29,7 @@ class HistoryStore(context: Context) {
             put("finalStatus", record.finalStatus)
             put("maxConfidence", record.maxConfidence.toDouble())
             put("callType", record.callType)
+            if (record.reason != null) put("reason", record.reason)
         }
         
         history.put(recordJson)

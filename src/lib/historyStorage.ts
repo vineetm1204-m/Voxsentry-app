@@ -2,15 +2,19 @@ import { NativeModules } from 'react-native';
 
 const { CallDetectionModule } = NativeModules;
 
+export type Verdict = 'real' | 'suspicious' | 'cloned' | 'uncertain' | 'unavailable';
+
 export type DetectionEvent = {
   id: string;
-  verdict: 'Safe' | 'Threat Detected';
+  verdict: Verdict;
+  verdictLabel: string;
   isThreat: boolean;
-  confidence: string;
+  score: number | null;
+  scoreLabel: string;
   timestamp: string;
   context: string;
   method: string;
-  profileChecked?: string;
+  reason: string | null;
 };
 
 type NativeCallRecord = {
@@ -20,30 +24,62 @@ type NativeCallRecord = {
   finalStatus: string;
   maxConfidence: number;
   callType: string;
+  reason?: string | null;
 };
+
+const VERDICT_LABELS: Record<Verdict, string> = {
+  real: 'Genuine',
+  suspicious: 'Suspicious',
+  cloned: 'Cloned',
+  uncertain: 'Uncertain',
+  unavailable: 'Unavailable',
+};
+
+function normalizeVerdict(status: string): Verdict {
+  switch (status) {
+    case 'real':
+    case 'safe':
+      return 'real';
+    case 'cloned':
+    case 'threat':
+      return 'cloned';
+    case 'suspicious':
+      return 'suspicious';
+    case 'unavailable':
+      return 'unavailable';
+    default:
+      return 'uncertain';
+  }
+}
 
 export const getHistory = async (): Promise<DetectionEvent[]> => {
   try {
     if (!CallDetectionModule) return [];
-    
+
     const dataStr = await CallDetectionModule.getHistory();
     const nativeRecords: NativeCallRecord[] = JSON.parse(dataStr);
-    
-    // Sort descending by timestamp
+
     nativeRecords.sort((a, b) => b.timestamp - a.timestamp);
 
-    return nativeRecords.map(record => {
-      const isThreat = record.finalStatus === 'threat';
-      const date = new Date(record.timestamp);
-      
+    return nativeRecords.map((record) => {
+      const verdict = normalizeVerdict(record.finalStatus);
+      const score = typeof record.maxConfidence === 'number' ? record.maxConfidence : null;
       return {
         id: record.id,
-        verdict: isThreat ? 'Threat Detected' : 'Safe',
-        isThreat,
-        confidence: `${(record.maxConfidence).toFixed(1)}%`, // Wait, earlier I logged it as raw val
-        timestamp: date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+        verdict,
+        verdictLabel: VERDICT_LABELS[verdict],
+        isThreat: verdict === 'cloned',
+        score,
+        scoreLabel: score !== null ? `${(score * 100).toFixed(0)}` : 'n/a',
+        timestamp: new Date(record.timestamp).toLocaleString([], {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
         context: record.callType === 'whatsapp' ? 'WhatsApp Call' : 'Phone Call',
-        method: 'Real-time TFLite Pipeline'
+        method: 'On-device TFLite pipeline',
+        reason: record.reason ?? null,
       };
     });
   } catch (e) {

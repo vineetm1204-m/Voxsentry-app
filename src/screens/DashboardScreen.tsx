@@ -213,9 +213,9 @@ export default function DashboardScreen({ navigation }: any) {
                     <Text style={theme.typography.caption}>{item.timestamp}</Text>
                   </View>
                 </View>
-                <View style={{ paddingHorizontal: 12, paddingVertical: 4, borderRadius: theme.borderRadius.full, backgroundColor: item.isThreat ? `${theme.colors.dangerRed}20` : `${theme.colors.successGreen}20` }}>
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: item.isThreat ? theme.colors.dangerRed : theme.colors.successGreen }}>
-                    {item.verdict}
+                <View style={{ paddingHorizontal: 12, paddingVertical: 4, borderRadius: theme.borderRadius.full, backgroundColor: item.isThreat ? `${theme.colors.dangerRed}20` : item.verdict === 'uncertain' || item.verdict === 'unavailable' ? `${theme.colors.warningAmber}20` : `${theme.colors.successGreen}20` }}>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: item.isThreat ? theme.colors.dangerRed : item.verdict === 'uncertain' || item.verdict === 'unavailable' ? theme.colors.warningAmber : theme.colors.successGreen }}>
+                    {item.verdictLabel}
                   </Text>
                 </View>
               </Card>

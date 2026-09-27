@@ -18,7 +18,7 @@ import {
 export default function LiveProtectionScreen() {
   const { isProtectionActive, setIsProtectionActive } = useProtection();
   const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
-  const [liveStatus, setLiveStatus] = useState<string | null>(null);
+  const [liveResult, setLiveResult] = useState<{ verdict: string; score: number | null; evidence: number; reason: string | null } | null>(null);
   const navigation = useNavigation();
 
   useFocusEffect(
@@ -30,9 +30,19 @@ export default function LiveProtectionScreen() {
   useEffect(() => {
     const subscription = DeviceEventEmitter.addListener('onDetectionUpdate', (event: any) => {
       if (event.event === 'onDetectionUpdate' && event.payload) {
-        setLiveStatus(event.payload);
-      } else if (event.event === 'onCaptureStopped') {
-        setLiveStatus(null);
+        try {
+          const parsed = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload;
+          setLiveResult({
+            verdict: parsed.verdict,
+            score: parsed.score ?? null,
+            evidence: parsed.evidence ?? 0,
+            reason: parsed.reason ?? null,
+          });
+        } catch (e) {
+          setLiveResult(null);
+        }
+      } else if (event.event === 'onCaptureStopped' || event.event === 'onSpeakerRequired') {
+        setLiveResult(null);
       }
     });
 
@@ -58,7 +68,7 @@ export default function LiveProtectionScreen() {
     if (isProtectionActive) {
       await OverlayBridge.stopProtection();
       setIsProtectionActive(false);
-      setLiveStatus(null);
+      setLiveResult(null);
     } else {
       if (!allGranted) {
         // We gate starting protection on having all permissions
@@ -66,6 +76,23 @@ export default function LiveProtectionScreen() {
       }
       await OverlayBridge.startProtection();
       setIsProtectionActive(true);
+    }
+  };
+
+  const verdictColor = (verdict: string) => {
+    if (verdict === 'cloned') return theme.colors.dangerRed;
+    if (verdict === 'suspicious') return theme.colors.warningAmber;
+    if (verdict === 'real') return theme.colors.successGreen;
+    return theme.colors.textSecondary;
+  };
+
+  const verdictLabel = (verdict: string) => {
+    switch (verdict) {
+      case 'real': return 'Genuine voice';
+      case 'suspicious': return 'Suspicious';
+      case 'cloned': return 'Cloned voice';
+      case 'unavailable': return 'Unavailable';
+      default: return 'Uncertain';
     }
   };
 
@@ -100,9 +127,11 @@ export default function LiveProtectionScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={theme.typography.heading}>{isProtectionActive ? 'Protection Active' : 'Live Protection'}</Text>
                 <Text style={[theme.typography.caption, { marginTop: 2 }]}>{isProtectionActive ? 'Call monitoring is enabled' : 'Real-time deepfake detection'}</Text>
-                {liveStatus && (
-                  <Text style={{ marginTop: 4, color: liveStatus.includes('threat') ? theme.colors.dangerRed : theme.colors.successGreen, fontWeight: '700', fontSize: 12 }}>
-                    Status: {liveStatus}
+                {liveResult && (
+                  <Text style={{ marginTop: 4, color: verdictColor(liveResult.verdict), fontWeight: '700', fontSize: 12 }}>
+                    {verdictLabel(liveResult.verdict)}
+                    {liveResult.score !== null ? ` · score ${Math.round(liveResult.score * 100)}` : ''}
+                    {liveResult.reason ? ` · ${liveResult.reason}` : ''}
                   </Text>
                 )}
                 {!allGranted && !isProtectionActive && (

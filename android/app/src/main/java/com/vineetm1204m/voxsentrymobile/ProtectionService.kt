@@ -30,27 +30,27 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 
-class ProtectionService : Service(), CallSessionManager.CallStateListener, AudioCaptureManager.AudioCaptureListener, InferenceEngine.InferenceListener {
+class ProtectionService : Service(), CallSessionManager.CallStateListener, AudioCaptureManager.AudioCaptureListener {
 
     private lateinit var windowManager: WindowManager
     private var containerView: FrameLayout? = null
     private var collapsedView: View? = null
     private var expandedView: View? = null
-    
-    // Expanded View components
+
     private var statusText: TextView? = null
     private var resultText: TextView? = null
+    private var subText: TextView? = null
     private var progressBar: ProgressBar? = null
     private var shieldIcon: ImageView? = null
     private var closeButton: ImageView? = null
-    
+
     private val CHANNEL_ID = "VoxSentryProtectionChannel"
 
     private lateinit var audioManager: AudioManager
     private lateinit var vibrator: Vibrator
-    
+
     private val audioCaptureManager = AudioCaptureManager()
-    private lateinit var inferenceEngine: InferenceEngine
+    private lateinit var detectionEngine: DetectionEngine
 
     private var isCallCurrentlyActive = false
     private var isSpeakerOn = false
@@ -58,12 +58,12 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
 
     private lateinit var historyStore: HistoryStore
     private var callStartTime: Long = 0
-    private var maxConfidence: Float = 0f
+    private var peakScore: Float = 0f
+    private var peakVerdict: String = DetectionConfig.Verdict.UNCERTAIN
+    private var lastResult: DetectionResult? = null
     private var currentCallType: String = "native"
 
-    enum class OverlayState {
-        WAITING, ANALYZING, SAFE, THREAT
-    }
+    enum class OverlayState { WAITING, ANALYZING, REAL, SUSPICIOUS, CLONED, UNCERTAIN, UNAVAILABLE }
 
     private var currentState = OverlayState.WAITING
 
@@ -75,9 +75,7 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -88,8 +86,8 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
 
         historyStore = HistoryStore(this)
 
-        inferenceEngine = InferenceEngine(this)
-        inferenceEngine.setListener(this)
+        detectionEngine = OnDeviceDetectionEngine(this)
+        detectionEngine.setListener { result -> onDetectionResult(result) }
         audioCaptureManager.setListener(this)
 
         CallSessionManager.startNativeMonitoring(this)
@@ -125,31 +123,29 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         isCallCurrentlyActive = isActive
         if (isActive) {
             callStartTime = System.currentTimeMillis()
-            maxConfidence = 0f
+            peakScore = 0f
+            peakVerdict = DetectionConfig.Verdict.UNCERTAIN
+            lastResult = null
             showOverlay()
             checkSpeakerState()
         } else {
             if (callStartTime > 0) {
                 val duration = System.currentTimeMillis() - callStartTime
-                val finalStatus = when (currentState) {
-                    OverlayState.THREAT -> "threat"
-                    OverlayState.SAFE -> "safe"
-                    else -> "unknown"
-                }
                 historyStore.addRecord(
                     CallRecord(
                         id = java.util.UUID.randomUUID().toString(),
                         timestamp = callStartTime,
                         duration = duration,
-                        finalStatus = finalStatus,
-                        maxConfidence = maxConfidence,
-                        callType = currentCallType
+                        finalStatus = peakVerdict,
+                        maxConfidence = peakScore,
+                        callType = currentCallType,
+                        reason = lastResult?.reason
                     )
                 )
             }
             hideOverlay()
             audioCaptureManager.stopCapture()
-            inferenceEngine.reset()
+            detectionEngine.reset()
             callStartTime = 0
         }
     }
@@ -171,24 +167,52 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
     }
 
     override fun onAudioWindowReady(audioData: ShortArray) {
-        inferenceEngine.processAudioWindow(audioData)
+        detectionEngine.processAudioWindow(audioData)
     }
 
     override fun onCaptureError(error: String) {
-        updateOverlayState(OverlayState.WAITING)
-        broadcastEvent("onCaptureStopped", error)
+        updateOverlayState(OverlayState.UNAVAILABLE)
+        val result = DetectionResult(
+            verdict = DetectionConfig.Verdict.UNAVAILABLE,
+            spoofScore = null,
+            evidence = 0f,
+            audioQuality = DetectionConfig.Quality.POOR,
+            speechRatio = 0f,
+            chunksAnalyzed = 0,
+            chunksSeen = 0,
+            reason = "capture error: $error"
+        )
+        lastResult = result
+        broadcastEvent("onDetectionUpdate", result.toJson())
     }
 
-    override fun onDetectionResult(isThreat: Boolean, confidence: Float) {
-        if (confidence > maxConfidence) {
-            maxConfidence = confidence
+    private fun onDetectionResult(result: DetectionResult) {
+        lastResult = result
+        if (result.spoofScore != null && result.spoofScore > peakScore) {
+            peakScore = result.spoofScore
+        }
+        val severity = mapOf(
+            DetectionConfig.Verdict.REAL to 0,
+            DetectionConfig.Verdict.UNCERTAIN to 1,
+            DetectionConfig.Verdict.SUSPICIOUS to 2,
+            DetectionConfig.Verdict.CLONED to 3,
+            DetectionConfig.Verdict.UNAVAILABLE to -1
+        )
+        if ((severity[result.verdict] ?: -1) > (severity[peakVerdict] ?: -1)) {
+            peakVerdict = result.verdict
         }
 
-        val newState = if (isThreat) OverlayState.THREAT else OverlayState.SAFE
-        updateOverlayState(newState)
-        
-        val result = "${if (isThreat) "threat" else "safe"}:$confidence"
-        broadcastEvent("onDetectionUpdate", result)
+        val newState = when (result.verdict) {
+            DetectionConfig.Verdict.REAL -> OverlayState.REAL
+            DetectionConfig.Verdict.SUSPICIOUS -> OverlayState.SUSPICIOUS
+            DetectionConfig.Verdict.CLONED -> OverlayState.CLONED
+            DetectionConfig.Verdict.UNCERTAIN -> OverlayState.UNCERTAIN
+            DetectionConfig.Verdict.UNAVAILABLE -> OverlayState.UNAVAILABLE
+            else -> OverlayState.UNCERTAIN
+        }
+        updateOverlayState(newState, result)
+
+        broadcastEvent("onDetectionUpdate", result.toJson())
     }
 
     private fun dpToPx(dp: Int): Int {
@@ -210,18 +234,19 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         return shape
     }
 
-    private fun updateOverlayState(state: OverlayState) {
+    private fun updateOverlayState(state: OverlayState, result: DetectionResult? = null) {
         if (containerView == null) return
 
         currentState = state
+        val res = result ?: lastResult
 
-        // Main thread UI update
         containerView?.post {
             when (state) {
                 OverlayState.WAITING -> {
                     statusText?.text = "Waiting for speaker..."
                     resultText?.text = "Enable speaker to analyze"
                     resultText?.setTextColor(Color.WHITE)
+                    subText?.text = ""
                     progressBar?.visibility = View.GONE
                     shieldIcon?.setColorFilter(Color.GRAY)
                 }
@@ -229,32 +254,69 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
                     statusText?.text = "Analyzing voice"
                     resultText?.text = "Listening for patterns..."
                     resultText?.setTextColor(Color.parseColor("#2DD4E8"))
+                    subText?.text = ""
                     progressBar?.visibility = View.VISIBLE
                     shieldIcon?.setColorFilter(Color.parseColor("#2DD4E8"))
                 }
-                OverlayState.SAFE -> {
-                    statusText?.text = "Analysis Complete"
-                    resultText?.text = "Safe: Human Voice"
+                OverlayState.REAL -> {
+                    statusText?.text = "Voice appears genuine"
+                    resultText?.text = "No synthetic-voice evidence"
                     resultText?.setTextColor(Color.parseColor("#10B981"))
+                    subText?.text = evidenceLine(res, false)
                     progressBar?.visibility = View.GONE
                     shieldIcon?.setColorFilter(Color.parseColor("#10B981"))
                 }
-                OverlayState.THREAT -> {
-                    val percentage = (maxConfidence * 100).toInt()
-                    statusText?.text = "THREAT DETECTED"
-                    resultText?.text = "$percentage% Cloned Voice"
+                OverlayState.SUSPICIOUS -> {
+                    statusText?.text = "Suspicious voice pattern"
+                    resultText?.text = "Some synthetic indicators"
+                    resultText?.setTextColor(Color.parseColor("#FBBF24"))
+                    subText?.text = evidenceLine(res, false)
+                    progressBar?.visibility = View.GONE
+                    shieldIcon?.setColorFilter(Color.parseColor("#FBBF24"))
+                }
+                OverlayState.CLONED -> {
+                    statusText?.text = "Synthetic voice detected"
+                    resultText?.text = detectionScoreLine(res)
                     resultText?.setTextColor(Color.parseColor("#EF4444"))
+                    subText?.text = evidenceLine(res, true)
                     progressBar?.visibility = View.GONE
                     shieldIcon?.setColorFilter(Color.parseColor("#EF4444"))
-
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        vibrator.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE))
+                        vibrator.vibrate(VibrationEffect.createOneShot(400, VibrationEffect.DEFAULT_AMPLITUDE))
                     } else {
-                        vibrator.vibrate(500)
+                        @Suppress("DEPRECATION")
+                        vibrator.vibrate(400)
                     }
+                }
+                OverlayState.UNCERTAIN -> {
+                    statusText?.text = "Unable to determine reliably"
+                    resultText?.text = "Analysis uncertain"
+                    resultText?.setTextColor(Color.parseColor("#9BA3B8"))
+                    subText?.text = res?.reason ?: "Move to a quieter environment"
+                    progressBar?.visibility = View.GONE
+                    shieldIcon?.setColorFilter(Color.parseColor("#9BA3B8"))
+                }
+                OverlayState.UNAVAILABLE -> {
+                    statusText?.text = "Analysis unavailable"
+                    resultText?.text = "Detection offline"
+                    resultText?.setTextColor(Color.parseColor("#9BA3B8"))
+                    subText?.text = res?.reason ?: ""
+                    progressBar?.visibility = View.GONE
+                    shieldIcon?.setColorFilter(Color.GRAY)
                 }
             }
         }
+    }
+
+    private fun detectionScoreLine(res: DetectionResult?): String {
+        val s = res?.spoofScore ?: return ""
+        return "Detection score: ${"%.0f".format(s * 100f)}/100"
+    }
+
+    private fun evidenceLine(res: DetectionResult?, isCloned: Boolean): String {
+        if (res == null) return ""
+        val scorePart = if (res.spoofScore != null) "score ${"%.0f".format(res.spoofScore * 100f)}" else "score n/a"
+        return "$scorePart · evidence ${"%.0f".format(res.evidence * 100f)}% · ${res.chunksAnalyzed} chunks"
     }
 
     private fun showOverlay() {
@@ -277,8 +339,7 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         params.y = dpToPx(150)
 
         containerView = FrameLayout(this)
-        
-        // 1. Create Collapsed View (The Circle)
+
         val collapsed = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -286,13 +347,11 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
             background = createCircularBackground(Color.parseColor("#151B2B"))
             elevation = dpToPx(8).toFloat()
             setPadding(dpToPx(10), dpToPx(10), dpToPx(10), dpToPx(10))
-            
             val icon = ImageView(context).apply {
                 setImageResource(R.mipmap.ic_launcher)
                 layoutParams = LinearLayout.LayoutParams(dpToPx(30), dpToPx(30))
             }
             addView(icon)
-            
             val label = TextView(context).apply {
                 text = "VoxSentry"
                 setTextColor(Color.WHITE)
@@ -301,30 +360,26 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
             }
             addView(label)
         }
-        
-        // 2. Create Expanded View (The Rectangle)
+
         val expanded = LinearLayout(this).apply {
             visibility = View.GONE
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(dpToPx(220), dpToPx(180))
+            layoutParams = FrameLayout.LayoutParams(dpToPx(240), dpToPx(190))
             background = createRectangularBackground(Color.parseColor("#151B2B"), 20)
             elevation = dpToPx(10).toFloat()
             setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16))
-            
-            // Header Row
+
             val header = FrameLayout(context).apply {
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                
                 val title = TextView(context).apply {
                     statusText = this
                     text = "Analyzing voice"
                     setTextColor(Color.WHITE)
-                    textSize = 16f
+                    textSize = 15f
                     gravity = Gravity.CENTER
                 }
                 addView(title)
-                
                 val close = ImageView(context).apply {
                     closeButton = this
                     setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
@@ -336,39 +391,48 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
                 addView(close)
             }
             addView(header)
-            
-            // Icon / Result Area
+
             val centerIcon = ImageView(context).apply {
                 shieldIcon = this
                 setImageResource(R.mipmap.ic_launcher)
-                layoutParams = LinearLayout.LayoutParams(dpToPx(50), dpToPx(50)).apply {
-                    topMargin = dpToPx(10)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(46), dpToPx(46)).apply {
+                    topMargin = dpToPx(8)
                 }
             }
             addView(centerIcon)
-            
+
             val result = TextView(context).apply {
                 resultText = this
                 text = "Listening..."
                 setTextColor(Color.parseColor("#2DD4E8"))
-                textSize = 18f
+                textSize = 16f
                 setTypeface(null, Typeface.BOLD)
                 gravity = Gravity.CENTER
-                setPadding(0, dpToPx(8), 0, dpToPx(8))
+                setPadding(0, dpToPx(6), 0, dpToPx(2))
             }
             addView(result)
-            
+
+            val sub = TextView(context).apply {
+                subText = this
+                text = ""
+                setTextColor(Color.parseColor("#9BA3B8"))
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, dpToPx(4))
+            }
+            addView(sub)
+
             val progress = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
                 progressBar = this
                 isIndeterminate = true
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(4))
             }
             addView(progress)
-            
+
             val footer = TextView(context).apply {
-                text = "AI-generated voice detection"
+                text = "AI voice-clone detection"
                 setTextColor(Color.GRAY)
-                textSize = 10f
+                textSize = 9f
                 gravity = Gravity.CENTER
                 setPadding(0, dpToPx(4), 0, 0)
             }
@@ -380,14 +444,8 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         collapsedView = collapsed
         expandedView = expanded
 
-        // Click listeners
-        collapsed.setOnClickListener {
-            toggleExpanded(true, params)
-        }
-        
-        closeButton?.setOnClickListener {
-            toggleExpanded(false, params)
-        }
+        collapsed.setOnClickListener { toggleExpanded(true, params) }
+        closeButton?.setOnClickListener { toggleExpanded(false, params) }
 
         try {
             windowManager.addView(containerView, params)
@@ -403,8 +461,8 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         if (expand) {
             collapsedView?.visibility = View.GONE
             expandedView?.visibility = View.VISIBLE
-            params.width = dpToPx(220)
-            params.height = dpToPx(180)
+            params.width = dpToPx(240)
+            params.height = dpToPx(190)
         } else {
             collapsedView?.visibility = View.VISIBLE
             expandedView?.visibility = View.GONE
@@ -413,7 +471,8 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         }
         try {
             windowManager.updateViewLayout(containerView, params)
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+        }
     }
 
     private fun hideOverlay() {
@@ -425,6 +484,7 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
                 expandedView = null
                 statusText = null
                 resultText = null
+                subText = null
                 progressBar = null
                 shieldIcon = null
             } catch (e: Exception) {
@@ -458,10 +518,12 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         super.onDestroy()
         hideOverlay()
         audioCaptureManager.stopCapture()
+        detectionEngine.close()
         CallSessionManager.stopNativeMonitoring()
         CallSessionManager.setListener(null)
         try {
             unregisterReceiver(audioRouteReceiver)
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+        }
     }
 }

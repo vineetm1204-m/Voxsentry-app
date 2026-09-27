@@ -39,7 +39,7 @@ class AudioProcessor(
             // 3. Power Spectrum
             val powerSpectrum = FloatArray(nFFT / 2 + 1)
             for (j in 0 until (nFFT / 2 + 1)) {
-                powerSpectrum[j] = (fftRe[j] * fftRe[j] + fftIm[j] * fftIm[j]) / nFFT
+                powerSpectrum[j] = (fftRe[j] * fftRe[j] + fftIm[j] * fftIm[j])
             }
 
             // 4. Mel Filterbank

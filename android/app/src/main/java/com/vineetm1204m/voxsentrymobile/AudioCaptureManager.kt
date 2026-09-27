@@ -45,8 +45,8 @@ class AudioCaptureManager {
         }
 
         try {
-            // Try VOICE_RECOGNITION first, fallback to MIC
-            var audioSource = MediaRecorder.AudioSource.VOICE_RECOGNITION
+            // Try VOICE_COMMUNICATION first for VoIP/speakerphone echo cancellation, fallback to MIC
+            var audioSource = MediaRecorder.AudioSource.VOICE_COMMUNICATION
             audioRecord = AudioRecord(audioSource, sampleRate, channelConfig, audioFormat, Math.max(minBufferSize, windowSizeSamples * 2))
             
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
