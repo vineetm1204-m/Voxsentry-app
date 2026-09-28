@@ -66,7 +66,7 @@ class LiveTranslationManager(private val context: Context) {
             "telugu", "te" -> TranslateLanguage.TELUGU
             "gujarati", "gu" -> TranslateLanguage.GUJARATI
             "kannada", "kn" -> TranslateLanguage.KANNADA
-            "malayalam", "ml" -> TranslateLanguage.MALAYALAM
+            "malayalam", "ml" -> "ml"
             else -> TranslateLanguage.ENGLISH // default fallback
         }
     }
@@ -81,7 +81,7 @@ class LiveTranslationManager(private val context: Context) {
             TranslateLanguage.TELUGU -> "te-IN"
             TranslateLanguage.GUJARATI -> "gu-IN"
             TranslateLanguage.KANNADA -> "kn-IN"
-            TranslateLanguage.MALAYALAM -> "ml-IN"
+            "ml" -> "ml-IN"
             else -> "en-US"
         }
     }
