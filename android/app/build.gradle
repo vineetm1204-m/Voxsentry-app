@@ -92,8 +92,8 @@ android {
         applicationId 'com.vineetm1204m.voxsentrymobile'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 4
-        versionName "1.0.3"
+        versionCode 1
+        versionName "1.0.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         
@@ -193,4 +193,7 @@ dependencies {
     // TensorFlow Lite dependencies
     implementation 'org.tensorflow:tensorflow-lite:2.16.1'
     implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
+    
+    // ML Kit Translation for offline Live Translation
+    implementation 'com.google.mlkit:translate:17.0.2'
 }

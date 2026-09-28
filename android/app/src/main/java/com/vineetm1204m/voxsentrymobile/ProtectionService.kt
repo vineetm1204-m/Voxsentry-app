@@ -29,8 +29,9 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
+import android.content.SharedPreferences
 
-class ProtectionService : Service(), CallSessionManager.CallStateListener, AudioCaptureManager.AudioCaptureListener {
+class ProtectionService : Service(), CallSessionManager.CallStateListener, AudioCaptureManager.AudioCaptureListener, LiveTranslationManager.TranslationListener {
 
     private lateinit var windowManager: WindowManager
     private var containerView: FrameLayout? = null
@@ -51,6 +52,21 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
 
     private val audioCaptureManager = AudioCaptureManager()
     private lateinit var detectionEngine: DetectionEngine
+
+    private lateinit var translationManager: LiveTranslationManager
+    
+    private var translationContainer: LinearLayout? = null
+    private var translationToggleBtn: TextView? = null
+    private var translationLangBtn: TextView? = null
+    private var translationOriginalText: TextView? = null
+    private var translationTranslatedText: TextView? = null
+    
+    private var isTranslationActive = false
+    private val supportedLangs = listOf("EN", "HI", "BN", "MR", "TA", "TE", "GU", "KN", "ML")
+    private var sourceLangIndex = 0
+    private var targetLangIndex = 1
+    
+    private lateinit var prefs: SharedPreferences
 
     private var isCallCurrentlyActive = false
     private var isSpeakerOn = false
@@ -85,10 +101,18 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
 
         historyStore = HistoryStore(this)
+        
+        prefs = getSharedPreferences("voxsentry.translation", Context.MODE_PRIVATE)
+        sourceLangIndex = prefs.getInt("sourceLangIndex", 0)
+        targetLangIndex = prefs.getInt("targetLangIndex", 1)
 
         detectionEngine = OnDeviceDetectionEngine(this)
         detectionEngine.setListener { result -> onDetectionResult(result) }
         audioCaptureManager.setListener(this)
+        
+        translationManager = LiveTranslationManager(this)
+        translationManager.setListener(this)
+        updateTranslationLangs()
 
         CallSessionManager.startNativeMonitoring(this)
         CallSessionManager.setListener(this)
@@ -146,8 +170,17 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
             hideOverlay()
             audioCaptureManager.stopCapture()
             detectionEngine.reset()
+            
+            translationManager.stopTranslation()
+            isTranslationActive = false
+            
             callStartTime = 0
         }
+    }
+
+    private fun updateTranslationLangs() {
+        translationManager.setLanguages(supportedLangs[sourceLangIndex], supportedLangs[targetLangIndex])
+        translationLangBtn?.text = "${supportedLangs[sourceLangIndex]} → ${supportedLangs[targetLangIndex]}"
     }
 
     private fun checkSpeakerState() {
@@ -365,7 +398,7 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
             visibility = View.GONE
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(dpToPx(240), dpToPx(190))
+            layoutParams = FrameLayout.LayoutParams(dpToPx(240), dpToPx(290))
             background = createRectangularBackground(Color.parseColor("#151B2B"), 20)
             elevation = dpToPx(10).toFloat()
             setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16))
@@ -437,6 +470,55 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
                 setPadding(0, dpToPx(4), 0, 0)
             }
             addView(footer)
+            
+            // Translation UI
+            val transDiv = View(context).apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(1)).apply {
+                    topMargin = dpToPx(8)
+                    bottomMargin = dpToPx(8)
+                }
+                setBackgroundColor(Color.parseColor("#333333"))
+            }
+            addView(transDiv)
+            
+            val transHeader = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                
+                val toggle = TextView(context).apply {
+                    translationToggleBtn = this
+                    text = "Live Translation OFF"
+                    setTextColor(Color.GRAY)
+                    textSize = 12f
+                    setOnClickListener { toggleLiveTranslation() }
+                }
+                addView(toggle, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                
+                val lang = TextView(context).apply {
+                    translationLangBtn = this
+                    text = "${supportedLangs[sourceLangIndex]} → ${supportedLangs[targetLangIndex]}"
+                    setTextColor(Color.parseColor("#2DD4E8"))
+                    textSize = 12f
+                    gravity = Gravity.END
+                    setOnClickListener { cycleTargetLang() }
+                    setOnLongClickListener { cycleSourceLang(); true }
+                }
+                addView(lang, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+            addView(transHeader)
+            
+            translationContainer = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                visibility = View.GONE
+                
+                translationOriginalText = TextView(context).apply { text = "..."; setTextColor(Color.GRAY); textSize = 11f; setPadding(0, dpToPx(4), 0, dpToPx(2)) }
+                addView(translationOriginalText)
+                
+                translationTranslatedText = TextView(context).apply { text = "..."; setTextColor(Color.WHITE); textSize = 12f; setTypeface(null, Typeface.BOLD) }
+                addView(translationTranslatedText)
+            }
+            addView(translationContainer)
         }
 
         containerView?.addView(collapsed)
@@ -462,7 +544,7 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
             collapsedView?.visibility = View.GONE
             expandedView?.visibility = View.VISIBLE
             params.width = dpToPx(240)
-            params.height = dpToPx(190)
+            params.height = dpToPx(290)
         } else {
             collapsedView?.visibility = View.VISIBLE
             expandedView?.visibility = View.GONE
@@ -487,6 +569,11 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
                 subText = null
                 progressBar = null
                 shieldIcon = null
+                translationContainer = null
+                translationToggleBtn = null
+                translationLangBtn = null
+                translationOriginalText = null
+                translationTranslatedText = null
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -514,11 +601,65 @@ class ProtectionService : Service(), CallSessionManager.CallStateListener, Audio
         }
     }
 
+    private fun toggleLiveTranslation() {
+        isTranslationActive = !isTranslationActive
+        if (isTranslationActive) {
+            translationToggleBtn?.text = "Live Translation ON"
+            translationToggleBtn?.setTextColor(Color.WHITE)
+            translationContainer?.visibility = View.VISIBLE
+            translationOriginalText?.text = "Starting..."
+            translationTranslatedText?.text = ""
+            translationManager.startTranslation()
+        } else {
+            translationToggleBtn?.text = "Live Translation OFF"
+            translationToggleBtn?.setTextColor(Color.GRAY)
+            translationContainer?.visibility = View.GONE
+            translationManager.stopTranslation()
+        }
+    }
+    
+    private fun cycleTargetLang() {
+        targetLangIndex = (targetLangIndex + 1) % supportedLangs.size
+        if (targetLangIndex == sourceLangIndex) targetLangIndex = (targetLangIndex + 1) % supportedLangs.size
+        prefs.edit().putInt("targetLangIndex", targetLangIndex).apply()
+        updateTranslationLangs()
+    }
+    
+    private fun cycleSourceLang() {
+        sourceLangIndex = (sourceLangIndex + 1) % supportedLangs.size
+        if (sourceLangIndex == targetLangIndex) sourceLangIndex = (sourceLangIndex + 1) % supportedLangs.size
+        prefs.edit().putInt("sourceLangIndex", sourceLangIndex).apply()
+        updateTranslationLangs()
+    }
+
+    override fun onStateChanged(state: LiveTranslationManager.State) {}
+
+    override fun onPartialTranscript(sourceText: String, targetText: String?) {
+        translationOriginalText?.post {
+            translationOriginalText?.text = "\"$sourceText\""
+            translationTranslatedText?.text = targetText?.let { "\"$it\"" } ?: "..."
+        }
+    }
+
+    override fun onFinalTranscript(sourceText: String, targetText: String?) {
+        translationOriginalText?.post {
+            translationOriginalText?.text = "\"$sourceText\""
+            translationTranslatedText?.text = targetText?.let { "\"$it\"" } ?: "[Translation Error]"
+        }
+    }
+
+    override fun onError(error: String) {
+        translationOriginalText?.post {
+            translationOriginalText?.text = error
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         hideOverlay()
         audioCaptureManager.stopCapture()
         detectionEngine.close()
+        translationManager.release()
         CallSessionManager.stopNativeMonitoring()
         CallSessionManager.setListener(null)
         try {
