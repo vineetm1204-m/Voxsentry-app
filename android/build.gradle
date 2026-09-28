@@ -39,11 +39,5 @@ subprojects {
             }
         }
     }
-    afterEvaluate { project ->
-        if (project.hasProperty("android")) {
-            project.android {
-                ndkVersion = "27.1.12297006"
-            }
-        }
-    }
+
 }
